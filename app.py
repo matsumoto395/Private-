@@ -15,6 +15,8 @@ from io import BytesIO
 from PIL import Image
 import pandas as pd
 import streamlit as st
+from mercapi import Mercari 
+mercari_api = Mercari() 
 
 # ---------- LINE SDK (任意) ----------
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
@@ -42,13 +44,12 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 def get_mercari_price(keyword: str):
     """
-    ログイン不要で jp.mercari.com の検索ページを取得し、
-    window.__PRELOADED_STATE__ に含まれる JSON から
-    上位 10 件の平均価格を算出して返す。
+    mercapi を使って上位 10 件の平均価格を返す
     """
-    url = f"https://jp.mercari.com/search?keyword={keyword}&status_on_sale=1"
     try:
-        html = requests.get(url, headers=HEADERS, timeout=10).text
+        items = mercari_api.fetch_all_items(keyword=keyword, limit=10)
+        prices = [item.price for item in items if item.price]
+        return sum(prices) // len(prices) if prices else None
     except Exception:
         return None
 
