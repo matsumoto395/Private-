@@ -100,4 +100,4 @@ with tab_form:
             "返金額":   pay_back,
             "画像パス": img_path
         })
-        st.success("✅
+        st.success("✅")
