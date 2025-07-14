@@ -85,7 +85,7 @@ if line_bot_api and parser:
         for e in ev:
             if isinstance(e,MessageEvent) and isinstance(e.message,TextMessage):
                 st.session_state.records.append({"登録日":datetime.date.today().isoformat(),
-                    "商品名":e.message.text,"依頼者":f\"LINE:{e.source.user_id}\",
+                    "商品名":e.message.text,"依頼者":f"LINE:{e.source.user_id}",
                     "想定売却":0,"実売却":0,"手数料率":0,"手数料":0,"返金額":0,"画像パス":None})
                 line_bot_api.reply_message(e.reply_token,TextMessage(text="商品名を登録しました！"))
         return {"status":"ok"}
