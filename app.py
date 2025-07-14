@@ -1,20 +1,17 @@
-# スマホ買取代行マネージャー – β4 (mercapi 版 / Cookie 不要)
-# ----------------------------------------------------------
+# スマホ買取代行マネージャー – β5 (公式 JSON API 版 / Cookie 不要)
+# ------------------------------------------------------------------
 # 依存パッケージ:
 #   streamlit
 #   pandas
 #   requests
 #   beautifulsoup4
 #   pillow
-#   mercapi          ← メルカリ公式 API ラッパ
 #   line-bot-sdk     ← LINE 連携を使う場合のみ
-# ----------------------------------------------------------
+# ------------------------------------------------------------------
 
-import os, datetime
+import os, datetime, requests
 import pandas as pd
 import streamlit as st
-from mercapi import Mercari                # ← NEW
-mercari_api = Mercari()                    # ← NEW
 
 # ---------- LINE SDK (任意) ----------
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
@@ -37,15 +34,26 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 if "records" not in st.session_state:
     st.session_state.records = []
 
-# ---------- メルカリ平均価格 ----------
+# ---------- メルカリ平均価格　(公式 JSON API) ----------
+HEADERS = {"User-Agent": "Mercari/3.0.0 (Android)"}
+
 def get_mercari_price(keyword: str):
-    """mercapi で上位 10 件の平均価格を返す"""
+    """
+    メルカリアプリが利用する検索 API を呼び、
+    上位10件の平均価格を返す。
+    """
     try:
-        items = mercari_api.search_items(keyword=keyword, limit=10)
-        prices = [item.price for item in items if item.price]
-        return sum(prices) // len(prices) if prices else None
+        api = (
+            "https://api.mercari.jp/v1/search?"
+            f"keyword={requests.utils.quote(keyword)}"
+            "&status=on_sale&limit=10"
+        )
+        obj = requests.get(api, headers=HEADERS, timeout=10).json()
+        items = obj.get("data", {}).get("items", [])
+        prices = [int(item["price"]) for item in items if item.get("price")]
+        return sum(prices)//len(prices) if prices else None
     except Exception as e:
-        st.warning(f"mercapi error: {e}")
+        st.warning(f"Mercari API error: {e}")
         return None
 
 # ---------- UI ----------
@@ -73,68 +81,23 @@ with tab_form:
         submitted    = st.form_submit_button("📥 登録")
 
     if submitted:
-        fee       = int(actual_price * fee_rate / 100)
-        pay_back  = actual_price - fee
-        img_path  = None
+        fee      = int(actual_price * fee_rate / 100)
+        pay_back = actual_price - fee
+        img_path = None
         if img_file:
             img_path = os.path.join(UPLOAD_DIR, img_file.name)
             with open(img_path, "wb") as f:
                 f.write(img_file.getbuffer())
 
         st.session_state.records.append({
-            "登録日":  datetime.date.today().isoformat(),
-            "商品名":  item_name,
-            "依頼者":  client_name,
+            "登録日":   datetime.date.today().isoformat(),
+            "商品名":   item_name,
+            "依頼者":   client_name,
             "想定売却": expected_price,
-            "実売却":  actual_price,
+            "実売却":   actual_price,
             "手数料率": fee_rate,
-            "手数料":  fee,
-            "返金額":  pay_back,
+            "手数料":   fee,
+            "返金額":   pay_back,
             "画像パス": img_path
         })
-        st.success("✅ 登録しました！")
-
-with tab_hist:
-    if st.session_state.records:
-        df = pd.DataFrame(st.session_state.records)
-        st.dataframe(df, use_container_width=True)
-        for rec in st.session_state.records:
-            if rec["画像パス"]:
-                st.image(rec["画像パス"], width=240, caption=rec["商品名"])
-    else:
-        st.info("まだ登録がありません。")
-
-# ---------- LINE Webhook (任意) ----------
-if line_bot_api and parser:
-    from streamlit.web.server.fastapi import add_fastapi_middleware
-    from fastapi import FastAPI, Request, HTTPException
-    app_fastapi = FastAPI()
-
-    @add_fastapi_middleware(app_fastapi)
-    @app_fastapi.post("/line-webhook")
-    async def line_webhook(request: Request):
-        signature = request.headers.get("X-Line-Signature", "")
-        body = await request.body()
-        try:
-            events = parser.parse(body.decode("utf-8"), signature)
-        except Exception:
-            raise HTTPException(status_code=400, detail="signature error")
-
-        for event in events:
-            if isinstance(event, MessageEvent) and isinstance(event.message, TextMessage):
-                st.session_state.records.append({
-                    "登録日": datetime.date.today().isoformat(),
-                    "商品名": event.message.text,
-                    "依頼者": f"LINE:{event.source.user_id}",
-                    "想定売却": 0,
-                    "実売却": 0,
-                    "手数料率": 0,
-                    "手数料": 0,
-                    "返金額": 0,
-                    "画像パス": None
-                })
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text="商品名を登録しました！")
-                )
-        return {"status": "ok"}
+        st.success("✅
