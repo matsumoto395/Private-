@@ -1,22 +1,20 @@
-
-# スマホ買取代行マネージャー – β3 (Cookie 不要版・メルカリJSON解析)
+# スマホ買取代行マネージャー – β4 (mercapi 版 / Cookie 不要)
 # ----------------------------------------------------------
 # 依存パッケージ:
 #   streamlit
+#   pandas
 #   requests
 #   beautifulsoup4
-#   pandas
 #   pillow
-#   line-bot-sdk   (任意: LINE 連携を使う場合)
+#   mercapi          ← メルカリ公式 API ラッパ
+#   line-bot-sdk     ← LINE 連携を使う場合のみ
 # ----------------------------------------------------------
 
-import os, datetime, re, json, requests
-from io import BytesIO
-from PIL import Image
+import os, datetime
 import pandas as pd
 import streamlit as st
-from mercapi import Mercari 
-mercari_api = Mercari() 
+from mercapi import Mercari                # ← NEW
+mercari_api = Mercari()                    # ← NEW
 
 # ---------- LINE SDK (任意) ----------
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
@@ -33,36 +31,21 @@ else:
 # ---------- Streamlit config ----------
 st.set_page_config(page_title="不用品買取代行マネージャー", layout="centered")
 
-# ---------- データ格納 ----------
+# ---------- データ保存 ----------
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 if "records" not in st.session_state:
     st.session_state.records = []
 
-# ---------- メルカリ相場取得関数 (HTML に埋め込まれた JSON 解析) ----------
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-
+# ---------- メルカリ平均価格 ----------
 def get_mercari_price(keyword: str):
-    """
-    mercapi を使って上位 10 件の平均価格を返す
-    """
+    """mercapi で上位 10 件の平均価格を返す"""
     try:
-        items = mercari_api.fetch_all_items(keyword=keyword, limit=10)
+        items = mercari_api.search_items(keyword=keyword, limit=10)
         prices = [item.price for item in items if item.price]
         return sum(prices) // len(prices) if prices else None
-    except Exception:
-        return None
-
-    m = re.search(r'window\.__PRELOADED_STATE__\s?=\s?({.*?});</script>', html)
-    if not m:
-        return None
-
-    try:
-        state = json.loads(m.group(1))
-        items = state["search"]["items"]["data"]["items"]
-        prices = [int(item["price"]) for item in items[:10] if item.get("price")]
-        return sum(prices) // len(prices) if prices else None
-    except Exception:
+    except Exception as e:
+        st.warning(f"mercapi error: {e}")
         return None
 
 # ---------- UI ----------
@@ -72,37 +55,41 @@ tab_form, tab_hist = st.tabs(["📋 登録フォーム", "📖 履歴"])
 
 with tab_form:
     with st.form("reg_form"):
-        item_name = st.text_input("商品名")
+        item_name   = st.text_input("商品名")
         client_name = st.text_input("依頼者名")
         expected_price = st.number_input("想定売却価格 (円)", step=100)
+
         if st.form_submit_button("🔍 メルカリ平均価格を取得") and item_name:
             price = get_mercari_price(item_name)
             if price:
                 st.success(f"平均価格: ¥{price:,}")
                 expected_price = price
             else:
-                st.error("取得失敗")
+                st.error("取得失敗（ヒット 0 件 or API エラー）")
+
         actual_price = st.number_input("実売却価格 (円)", step=100)
-        fee_rate = st.slider("手数料率 (%)", 0, 100, 20)
-        img_file = st.file_uploader("商品画像", type=["jpg", "png"])
-        submitted = st.form_submit_button("📥 登録")
+        fee_rate     = st.slider("手数料率 (%)", 0, 100, 20)
+        img_file     = st.file_uploader("商品画像", type=["jpg", "png"])
+        submitted    = st.form_submit_button("📥 登録")
+
     if submitted:
-        fee = int(actual_price * fee_rate / 100)
-        pay_back = actual_price - fee
-        img_path = None
+        fee       = int(actual_price * fee_rate / 100)
+        pay_back  = actual_price - fee
+        img_path  = None
         if img_file:
             img_path = os.path.join(UPLOAD_DIR, img_file.name)
             with open(img_path, "wb") as f:
                 f.write(img_file.getbuffer())
+
         st.session_state.records.append({
-            "登録日": datetime.date.today().isoformat(),
-            "商品名": item_name,
-            "依頼者": client_name,
+            "登録日":  datetime.date.today().isoformat(),
+            "商品名":  item_name,
+            "依頼者":  client_name,
             "想定売却": expected_price,
-            "実売却": actual_price,
+            "実売却":  actual_price,
             "手数料率": fee_rate,
-            "手数料": fee,
-            "返金額": pay_back,
+            "手数料":  fee,
+            "返金額":  pay_back,
             "画像パス": img_path
         })
         st.success("✅ 登録しました！")
@@ -113,7 +100,7 @@ with tab_hist:
         st.dataframe(df, use_container_width=True)
         for rec in st.session_state.records:
             if rec["画像パス"]:
-                st.image(rec["画像パス"], width=250, caption=rec["商品名"])
+                st.image(rec["画像パス"], width=240, caption=rec["商品名"])
     else:
         st.info("まだ登録がありません。")
 
@@ -132,6 +119,7 @@ if line_bot_api and parser:
             events = parser.parse(body.decode("utf-8"), signature)
         except Exception:
             raise HTTPException(status_code=400, detail="signature error")
+
         for event in events:
             if isinstance(event, MessageEvent) and isinstance(event.message, TextMessage):
                 st.session_state.records.append({
@@ -145,6 +133,8 @@ if line_bot_api and parser:
                     "返金額": 0,
                     "画像パス": None
                 })
-                line_bot_api.reply_message(event.reply_token,
-                                           TextSendMessage(text="商品名を登録しました！"))
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="商品名を登録しました！")
+                )
         return {"status": "ok"}
