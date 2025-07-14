@@ -1,15 +1,10 @@
-# スマホ買取代行マネージャー – β5-fixed
+# スマホ買取代行マネージャー – β6
 # ----------------------------------------------------------
-# 依存パッケージ:
-#   streamlit
-#   pandas
-#   requests
-#   beautifulsoup4
-#   pillow
-#   line-bot-sdk  ← LINE 連携を使う場合のみ
+#   streamlit  pandas  requests  beautifulsoup4  pillow
+#   line-bot-sdk（任意：LINE 連携を使う場合のみ）
 # ----------------------------------------------------------
 
-import os, datetime, requests
+import os, datetime, re, json, time, random, requests
 import pandas as pd
 import streamlit as st
 
@@ -34,29 +29,37 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 if "records" not in st.session_state:
     st.session_state.records = []
 
-# ---------- メルカリ平均価格 (API → HTML フォールバック) ----------
-UA_MOBILE = "Mercari/3.0.0 (Android)"
-UA_WEB    = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+# ---------- メルカリ平均価格取得 ----------
+UA_MOBILE = ("Mozilla/5.0 (Linux; Android 11; Pixel 5) "
              "AppleWebKit/537.36 (KHTML, like Gecko) "
-             "Chrome/123.0 Safari/537.36")
-
-import re, json
+             "Chrome/123.0 Mobile Safari/537.36")                    # ★
+UA_WEB = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+          "AppleWebKit/537.36 (KHTML, like Gecko) "
+          "Chrome/123.0 Safari/537.36")
 
 def _api_try(keyword: str):
-    api = (
-        "https://api.mercari.jp/v1/search?"
-        f"keyword={requests.utils.quote(keyword)}"
-        "&status=on_sale&limit=10"
-    )
-    r = requests.get(api, headers={"User-Agent": UA_MOBILE}, timeout=8)
+    api = ("https://api.mercari.jp/v1/search?"
+           f"keyword={requests.utils.quote(keyword)}"
+           "&status=on_sale&limit=10")
+    r = requests.get(api,
+                     headers={"User-Agent": UA_MOBILE,
+                              "Accept-Language": "ja-JP"},            # ★
+                     timeout=8)
+    st.write("API status:", r.status_code)                            # ★デバッグ出力
     if r.status_code != 200:
         return None
     items = r.json().get("data", {}).get("items", [])
     return [int(i["price"]) for i in items if i.get("price")]
 
-def _html_try(keyword: str):
+def _html_try(keyword: str, use_proxy=False):
     url = f"https://jp.mercari.com/search?keyword={requests.utils.quote(keyword)}"
-    html = requests.get(url, headers={"User-Agent": UA_WEB}, timeout=8).text
+    if use_proxy:
+        url = f"https://r.jina.ai/http://{url.lstrip('https://')}"    # Cloudflare 回避★
+    r = requests.get(url, headers={"User-Agent": UA_WEB}, timeout=10)
+    st.write("HTML status:", r.status_code, "(proxy" if use_proxy else "")  # ★
+    if r.status_code != 200:
+        return None
+    html = r.text
     m = re.search(r'window\.__PRELOADED_STATE__\s?=\s?({.*?});</script>', html)
     if not m:
         return None
@@ -65,11 +68,14 @@ def _html_try(keyword: str):
     return [int(it["price"]) for it in items[:10]]
 
 def get_mercari_price(keyword: str):
-    """API が失敗したら HTML 解析にフォールバックして平均価格を返す"""
-    for fetch in (_api_try, _html_try):
+    """API → HTML → Proxy HTML の順で平均価格を返す"""
+    for fetch in (_api_try,
+                  lambda kw: _html_try(kw, False),
+                  lambda kw: _html_try(kw, True)):                   # ★3 段目
         prices = fetch(keyword)
         if prices:
             return sum(prices) // len(prices)
+        time.sleep(random.uniform(0.8, 1.5))                        # レートリミット対策★
     return None
 
 # ---------- UI ----------
@@ -128,7 +134,7 @@ with tab_hist:
     else:
         st.info("まだ登録がありません。")
 
-# ---------- LINE Webhook (任意) ----------
+# ---------- LINE Webhook ----------
 if line_bot_api and parser:
     from streamlit.web.server.fastapi import add_fastapi_middleware
     from fastapi import FastAPI, Request, HTTPException
